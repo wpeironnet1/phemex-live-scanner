@@ -1,4 +1,11 @@
+import express from "express";
+import {fetchProducts,fetchTicker24h,fetchOrderBook,fetchTrades,fetchKlines,BASE_URL,WS_URL} from "./phemex.js";
+import {rows,status} from "./state.js";
+import {startFeed} from "./ws.js";
+import {classify,riskState,setKill,paperEnter,paperMark,openPositions,idempotent} from "./trading.js";
 import {authStatus,authDiagnosticStatus} from "./auth.js";
+import {liveReadiness,reconcileLive,verifyProtection} from "./execution.js";
+import {metrics,requestMetrics} from "./monitor.js";
 const app=express();app.disable("x-powered-by");app.use(express.json({limit:"16kb"}));app.use(requestMetrics);startFeed();
 const opsToken=()=>String(process.env.OPS_TOKEN||"");function requireOps(q,r,n){const expected=opsToken();if(!expected)return r.status(503).json({error:"OPS_TOKEN is not configured"});const supplied=String(q.get("authorization")||"").replace(/^Bearer\s+/i,"");if(supplied!==expected)return r.status(401).json({error:"unauthorized"});n();}
 const feed=()=>{const s=status(),m=metrics(s);return {...s,...m}};
