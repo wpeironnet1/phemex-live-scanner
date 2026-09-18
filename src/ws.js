@@ -1,0 +1,5 @@
+import WebSocket from "ws";import {WS_URL} from "./phemex.js";import {ingestPack,ingestBook,ingestTrades,rows} from "./state.js";
+let ws,timer,retry=1000,focused=[];
+const send=(method,params=[])=>ws?.readyState===1&&ws.send(JSON.stringify({id:Date.now()+Math.random(),method,params}));
+function focus(){const next=rows().filter(x=>x.turnover>0).slice(0,6).map(x=>x.symbol);if(next.join()==focused.join())return;for(const s of focused){send("orderbook_p.unsubscribe",[s]);send("trade_p.unsubscribe",[s])}focused=next;for(const s of focused){send("orderbook_p.subscribe",[s]);send("trade_p.subscribe",[s])}}
+export function startFeed(){ws=new WebSocket(WS_URL);ws.on("open",()=>{retry=1000;send("perp_market24h_pack_p.subscribe");timer=setInterval(()=>{send("server.ping");focus()},5000)});ws.on("message",b=>{try{const m=JSON.parse(b.toString());if(m.method==="perp_market24h_pack_p.update"||m.fields)ingestPack(m);if(m.orderbook_p)ingestBook(m);if(m.trades_p)ingestTrades(m)}catch{}});const reconnect=()=>{clearInterval(timer);setTimeout(startFeed,retry);retry=Math.min(30000,retry*2)};ws.on("close",reconnect);ws.on("error",()=>ws.close())}
