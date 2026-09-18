@@ -5,5 +5,5 @@ export const fetchProducts=()=>getJson("/public/products");
 export const fetchTicker24h=s=>getJson("/md/v2/ticker/24hr?"+new URLSearchParams({symbol:s}));
 export const fetchOrderBook=s=>getJson("/md/v2/orderbook?"+new URLSearchParams({symbol:s}));
 export const fetchTrades=s=>getJson("/md/v2/trade?"+new URLSearchParams({symbol:s}));
-export const fetchKlines=(s,resolution=60,limit=10)=>getJson("/exchange/public/md/v2/kline/last?"+new URLSearchParams({symbol:s,resolution:String(resolution),limit:String(limit)}));
+export const fetchKlines=(s,resolution=60,limit=10)=>getJson("/exchange/public/md/v2/kline?"+new URLSearchParams({symbol:s,resolution:String(resolution),limit:String(limit)}));
 export {BASE_URL};
