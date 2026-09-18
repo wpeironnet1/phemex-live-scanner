@@ -6,4 +6,4 @@ app.get("/products",async(_q,r)=>{try{r.json(await fetchProducts())}catch(e){r.s
 app.get("/scan",(q,r)=>{const limit=Math.max(1,Math.min(50,Number(q.query.limit)||20));const minTurnover=Number(q.query.minTurnover)||0;r.json({ts:new Date().toISOString(),source:"Phemex WebSocket",...status(),ranked:rows().filter(x=>(x.turnover||0)>=minTurnover).slice(0,limit)})});
 app.get("/market/:symbol",async(q,r)=>{try{const s=q.params.symbol.toUpperCase();const [ticker,book,trades,k1,k5]=await Promise.all([fetchTicker24h(s),fetchOrderBook(s),fetchTrades(s),fetchKlines(s,60,10),fetchKlines(s,300,10)]);r.json({ts:new Date().toISOString(),symbol:s,ticker,book,trades,kline1m:k1,kline5m:k5})}catch(e){r.status(502).json({error:e.message})}});
 app.use((e,_q,r,_n)=>r.status(500).json({error:e.message}));
-app.listen(Number(process.env.PORT||3000),()=>console.log("Phemex scanner ready"));
+const port=Number(process.env.PORT||3000); app.listen(port,"0.0.0.0",()=>console.log(`Phemex scanner ready on 0.0.0.0:${port}`));
