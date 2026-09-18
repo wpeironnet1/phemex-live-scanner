@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: phemex-live-scanner
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
