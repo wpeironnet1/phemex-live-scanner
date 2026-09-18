@@ -1,25 +1,20 @@
 # Phemex Live Scanner
+Production-ready, public-data-only Phemex perpetual scanner. No Phemex API key is required.
 
-Read-only Phemex perpetual-market scanner using Phemex public market data. **No private API key is required.**
+## Live engine
+The service connects to Phemex's public WebSocket, subscribes to the packed perpetual 24h stream, retains rolling snapshots, and dynamically focuses order-book/trade subscriptions on the strongest six symbols (kept below Phemex's documented per-connection subscription limit). It reconnects automatically and sends heartbeats.
 
-## Current API
-- `GET /health` — service status and timestamp
-- `GET /products` — raw Phemex product catalogue
-- `GET /ticker/:symbol` — normalized ticker plus raw upstream payload
-- `GET /scan?limit=20&maxSymbols=120` — discovers listed perpetuals, fetches fresh 24h ticker data, normalizes fields and ranks candidates
+## Signals
+`/scan` ranks current perpetuals using 1m/5m price momentum, rolling volume acceleration, 1m open-interest change, top-10 order-book imbalance, 1m aggressive trade flow, funding and turnover context. `/market/:symbol` returns ticker, book, recent trades, 1m klines and 5m klines directly from Phemex REST for drill-down.
 
-The first ranking model is deliberately simple. It combines positive 24h momentum, trading range and activity. The next layer will add rolling 1m/5m observations, volume acceleration, order-book imbalance, funding/open-interest normalization and WebSocket collection.
+## Endpoints
+- `GET /health`
+- `GET /scan?limit=20&minTurnover=0`
+- `GET /market/ENAUSDT`
+- `GET /products`
 
-## Run
-```bash
-npm install
-npm start
-```
-
-Default port is `3000`.
+## Deploy
+A Dockerfile and `render.yaml` are included for an always-on Render web service. Any Docker host works. Set no secrets; optional variables are `PORT`, `PHEMEX_BASE_URL`, and `PHEMEX_WS_URL`.
 
 ## Security
-Public-data-only. Never commit Phemex API keys, secrets, account credentials, or withdrawal/trading credentials.
-
-## Architecture
-`src/phemex.js` isolates Phemex HTTP access. `src/scanner.js` owns normalization/ranking. `src/server.js` exposes the HTTP interface. This separation lets us adapt if Phemex changes a response schema without rewriting the scoring layer.
+Never add exchange keys or account credentials. This service reads public market data only.
