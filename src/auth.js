@@ -5,4 +5,39 @@ export function sign(path,query="",expiry=Math.floor(Date.now()/1000)+60,body=""
 export async function privateRequest(method,path,{query="",body=null}={}){if((process.env.TRADING_MODE||"paper").toLowerCase()==="paper")throw new Error("Private live execution disabled while TRADING_MODE=paper");const text=body==null?"":JSON.stringify(body),headers={...sign(path,query,undefined,text),"content-type":"application/json"};const r=await fetch(`${API}${path}${query?`?${query}`:""}`,{method,headers,body:text||undefined});const j=await r.json().catch(()=>({}));if(!r.ok||j?.code&&j.code!==0)throw new Error(`Phemex request failed (${r.status}/${j?.code??"unknown"})`);return j;}
 
 // Read-only connectivity diagnostics must remain separate from order execution.
-export function authDiagnosticStatus(){return {configured:authStatus().credentialsPresent,readOnly:true,executionUnlocked:false};}
+export async function authDiagnosticStatus() {
+  const path = "/g-accounts/accountPositions";
+  const query = "currency=USDT";
+
+  try {
+    const headers = sign(path, query);
+
+    const response = await fetch(`${API}${path}?${query}`, {
+      method: "GET",
+      headers
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    const authenticated =
+      response.ok && (data?.code === 0 || data?.code === undefined);
+
+    return {
+      authenticated,
+      configured: authStatus().credentialsPresent,
+      readOnly: true,
+      executionUnlocked: false,
+      apiHost: new URL(API).host,
+      httpStatus: response.status,
+      responseCode: data?.code ?? null
+    };
+  } catch (error) {
+    return {
+      authenticated: false,
+      configured: authStatus().credentialsPresent,
+      readOnly: true,
+      executionUnlocked: false,
+      error: String(error?.message || "authentication test failed")
+    };
+  }
+}
