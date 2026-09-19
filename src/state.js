@@ -34,6 +34,22 @@ function persist(){
 restore();const timer=setInterval(persist,SAVE_MS);timer.unref?.();
 for(const sig of ["SIGTERM","SIGINT"])process.once(sig,()=>{persist();process.exit(0)});
 
+export function ingestRestTickers(payload){
+  const data=Array.isArray(payload?.result)?payload.result:Array.isArray(payload?.data)?payload.data:Array.isArray(payload)?payload:null;
+  if(!data?.length)return 0;
+  const t=now();let accepted=0;
+  for(const o of data){
+    const s=o?.symbol;if(!s)continue;
+    const prev=latest.get(s)||{};
+    const val=(keys,old)=>{for(const key of keys)if(Object.prototype.hasOwnProperty.call(o,key)){const v=n(o[key]);if(v!=null)return v}return old??null};
+    const snap={symbol:s,open:val(["openRp"],prev.open),high:val(["highRp"],prev.high),low:val(["lowRp"],prev.low),last:val(["lastRp","closeRp"],prev.last),volume:val(["volumeRq"],prev.volume),turnover:val(["turnoverRv"],prev.turnover),openInterest:val(["openInterestRv"],prev.openInterest),index:val(["indexRp","indexPriceRp"],prev.index),mark:val(["markRp","markPriceRp"],prev.mark),funding:val(["fundingRateRr"],prev.funding),predFunding:val(["predFundingRateRr"],prev.predFunding),ts:t};
+    if(snap.last==null)continue;
+    latest.set(s,snap);if(!history.has(s))history.set(s,[]);accepted++;
+  }
+  if(accepted)updatedAt=t;
+  return accepted;
+}
+
 export function ingestPack(msg){
   if(!Array.isArray(msg?.data)||!Array.isArray(msg?.fields))return;
   const f=msg.fields,t=now();
