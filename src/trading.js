@@ -12,6 +12,8 @@ function rollDay(){const d=new Date().toISOString().slice(0,10);if(d!==riskDay){
 function recover(){if(recovered)return;recovered=true;if(!fs.existsSync(journalPath))return;try{const lines=fs.readFileSync(journalPath,"utf8").split(/\r?\n/).filter(Boolean);const open=new Map();let dayPnl=0,lastKill=false;for(const line of lines){let e;try{e=JSON.parse(line)}catch{continue}if(e.type==="paper_entry"&&e.id)open.set(e.id,e);if(e.type==="paper_exit"&&e.id){open.delete(e.id);if(dayOf(e.at)===riskDay)dayPnl+=Number(e.pnl)||0;}if(e.type==="kill_switch")lastKill=Boolean(e.enabled);}for(const [id,p] of open){positions.set(id,{id:p.id,symbol:p.symbol,side:p.side||"Buy",entry:Number(p.entry),stop:Number(p.stop),tp:Number(p.tp),qty:Number(p.qty),riskUsd:Number(p.riskUsd),openedAt:Number(p.openedAt)||Date.parse(p.at)||Date.now(),status:"OPEN"});cooldown.set(p.symbol,Math.max(Date.now(),(Number(p.openedAt)||0)+cfg.cooldownMs));}realized=dayPnl;kill=lastKill;write({type:"startup_recovery",positions:positions.size,realizedPnl:+realized.toFixed(4),killSwitch:kill,riskDay});}catch(e){write({type:"startup_recovery_error",message:String(e?.message||e)});}}
 recover();
 
+// Stricter long filter after repeated momentum stop-outs.  The scanner now
+// favors sustained participation rather than buying the first late spike.
 export function classify(x){
   const reasons=[];
   if(!x?.ready1m||!x?.ready5m)reasons.push("history");
@@ -20,13 +22,20 @@ export function classify(x){
   if(x?.volumeAcceleration==null)reasons.push("volume_data");
   if(x?.orderBookImbalance==null)reasons.push("book_data");
   if(x?.tradeFlow1m==null)reasons.push("trade_data");
-  if((x?.p5??0)>3.5||(x?.p1??0)>1.5)reasons.push("chase");
-  if((x?.p1??0)<0.08||(x?.p5??0)<0.18)reasons.push("weak");
-  if(x?.volumeAcceleration!=null&&x.volumeAcceleration<0.8)reasons.push("volume");
-  if((x?.oiDelta1m??0)<-0.2)reasons.push("oi");
-  if(x?.orderBookImbalance!=null&&x.orderBookImbalance<=-0.65)reasons.push("book");
-  if(x?.tradeFlow1m!=null&&x.tradeFlow1m<=-0.65)reasons.push("flow");
-  return {class:reasons.length?"NO_TRADE":"EARLY_MOMENTUM",eligible:!reasons.length,reasons};
+
+  // Reject late/vertical entries much earlier than the old 1.5%/3.5% caps.
+  if((x?.p1??0)>0.75||(x?.p5??0)>1.75)reasons.push("chase");
+  // Require meaningful, but not already-exhausted, momentum on both windows.
+  if((x?.p1??0)<0.10||(x?.p5??0)<0.30)reasons.push("weak");
+  // Demand a real volume expansion rather than merely above-baseline activity.
+  if(x?.volumeAcceleration!=null&&x.volumeAcceleration<1.25)reasons.push("volume");
+  // Longs should show new participation: falling OI no longer passes.
+  if(x?.oiDelta1m==null)reasons.push("oi_data");
+  else if(x.oiDelta1m<0)reasons.push("oi");
+  // Require positive book and tape confirmation, not just absence of extremes.
+  if(x?.orderBookImbalance!=null&&x.orderBookImbalance<0.15)reasons.push("book");
+  if(x?.tradeFlow1m!=null&&x.tradeFlow1m<0.15)reasons.push("flow");
+  return {class:reasons.length?"NO_TRADE":"CONFIRMED_LONG",eligible:!reasons.length,reasons};
 }
 export function riskState(){rollDay();return {mode:cfg.mode,killSwitch:kill,openPositions:positions.size,maxPositions:cfg.maxPositions,realizedPnl:+realized.toFixed(2),paperEquity:cfg.paperEquity,riskDay,recovered,credentialsPresent:Boolean(process.env.PHEMEX_API_KEY&&process.env.PHEMEX_API_SECRET)};}
 export function setKill(v=true){kill=Boolean(v);write({type:"kill_switch",enabled:kill});return riskState()}
