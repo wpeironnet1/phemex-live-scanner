@@ -1,9 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decodeApiSecret, sign } from "../src/auth.js";
+import { decodeApiSecret, secretDiagnostics, sign } from "../src/auth.js";
 
 test("decodes Phemex API secret as base64url bytes", () => {
   assert.deepEqual(decodeApiSecret("c2VjcmV0"), Buffer.from("secret"));
+});
+
+test("reports safe credential-shape diagnostics without exposing secret", () => {
+  assert.deepEqual(secretDiagnostics(" c2VjcmV0 "), {
+    secretPresent: true,
+    hasOuterWhitespace: true,
+    hasQuotes: false,
+    encodedLength: 8,
+    decodedBytes: 6,
+    base64UrlRoundTrip: true
+  });
 });
 
 test("sign uses decoded API secret per Phemex REST spec", () => {
