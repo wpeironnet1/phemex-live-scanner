@@ -1,6 +1,6 @@
 import WebSocket from "ws";
-import {WS_URL} from "./phemex.js";
-import {ingestPack,ingestBook,ingestTrades,rows,sampleHistory} from "./state.js";
+import {WS_URL,fetchAllTickers24h} from "./phemex.js";
+import {ingestPack,ingestRestTickers,ingestBook,ingestTrades,rows,sampleHistory} from "./state.js";
 import {count} from "./monitor.js";
 
 let marketWs,microWs,timer,retry=1000,focused=[];
@@ -10,7 +10,7 @@ const ROTATE_COUNT=Math.max(5,Math.min(50,Number(process.env.MICROSTRUCTURE_ROTA
 const ROTATE_MS=Math.max(5000,Number(process.env.MICROSTRUCTURE_ROTATE_MS||15000));
 const STALE_MS=Math.max(10000,Number(process.env.FEED_STALE_RECONNECT_MS||12000));
 const CONNECT_TIMEOUT_MS=Math.max(5000,Number(process.env.FEED_CONNECT_TIMEOUT_MS||10000));
-let rotateOffset=0,lastRotate=0,lastTickerAt=0;
+let rotateOffset=0,lastRotate=0,lastTickerAt=0,lastRestAt=0,restBusy=false;\nconst REST_REFRESH_MS=Math.max(2000,Number(process.env.REST_TICKER_REFRESH_MS||3000));
 
 const send=(socket,method,params=[])=>socket?.readyState===WebSocket.OPEN&&socket.send(JSON.stringify({id:Date.now()+Math.random(),method,params}));
 
@@ -45,6 +45,17 @@ function handleMarket(m){
 function handleMicro(m){
   if(m?.orderbook_p)ingestBook(m);
   if(m?.trades_p)ingestTrades(m);
+}
+async function refreshRestTickers(force=false){
+  const t=Date.now();if(restBusy||(!force&&t-lastRestAt<REST_REFRESH_MS))return;
+  restBusy=true;
+  try{
+    const payload=await fetchAllTickers24h();
+    const accepted=ingestRestTickers(payload);
+    if(accepted){lastRestAt=Date.now();count("restTickerRefreshes")}
+    else count("restTickerEmpty");
+  }catch(e){count("restTickerErrors");console.warn("Phemex REST ticker refresh failed:",e?.message)}
+  finally{restBusy=false}
 }
 function scheduleMarketReconnect(reason,gen){
   if(gen!==marketGeneration||marketReconnectTimer)return;
