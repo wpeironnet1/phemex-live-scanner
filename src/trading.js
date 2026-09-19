@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 
 const cfg={mode:(process.env.TRADING_MODE||"paper").toLowerCase(),riskPct:Number(process.env.RISK_PER_TRADE_PCT||0.25),paperEquity:Number(process.env.PAPER_EQUITY_USD||1000),maxPositions:Number(process.env.MAX_OPEN_POSITIONS||2),dailyLossPct:Number(process.env.MAX_DAILY_LOSS_PCT||2),cooldownMs:Number(process.env.TRADE_COOLDOWN_MINUTES||15)*60000,maxAgeMs:Number(process.env.MAX_MARKET_AGE_MS||10000)};
 const dataDir=process.env.DATA_DIR||"./data", journalPath=path.join(dataDir,"trades.jsonl");
-const positions=new Map(), cooldown=new Map(), seen=new Set(); let realized=0, kill=false, riskDay=new Date().toISOString().slice(0,10),recovered=false;
+const positions=new Map(), cooldown=new Map(), seen=new Set(), setups=new Map(); let realized=0, kill=false, riskDay=new Date().toISOString().slice(0,10),recovered=false;
 try{fs.mkdirSync(dataDir,{recursive:true});}catch{}
 const write=x=>{try{fs.appendFileSync(journalPath,JSON.stringify({...x,at:new Date().toISOString()})+"\n")}catch{}};
 const dayOf=x=>String(x||"").slice(0,10);
@@ -15,31 +15,39 @@ recover();
 // Stricter long filter after repeated momentum stop-outs.  The scanner now
 // favors sustained participation rather than buying the first late spike.
 export function classify(x){
-  const reasons=[];
+  const reasons=[], t=Date.now(), s=x?.symbol;
   if(!x?.ready1m||!x?.ready5m)reasons.push("history");
   if((x?.marketAgeMs??Infinity)>cfg.maxAgeMs)reasons.push("stale");
   if(x?.p1==null||x?.p5==null)reasons.push("momentum_data");
   if(x?.volumeAcceleration==null)reasons.push("volume_data");
   if(x?.orderBookImbalance==null)reasons.push("book_data");
   if(x?.tradeFlow1m==null)reasons.push("trade_data");
-
-  // Reject late/vertical entries much earlier than the old 1.5%/3.5% caps.
   if((x?.p1??0)>0.75||(x?.p5??0)>1.75)reasons.push("chase");
-  // Require meaningful, but not already-exhausted, momentum on both windows.
   if((x?.p1??0)<0.10||(x?.p5??0)<0.30)reasons.push("weak");
-  // Demand a real volume expansion rather than merely above-baseline activity.
   if(x?.volumeAcceleration!=null&&x.volumeAcceleration<1.25)reasons.push("volume");
-  // Longs should show new participation: falling OI no longer passes.
-  if(x?.oiDelta1m==null)reasons.push("oi_data");
-  else if(x.oiDelta1m<0)reasons.push("oi");
-  // Require positive book and tape confirmation, not just absence of extremes.
+  if(x?.oiDelta1m==null)reasons.push("oi_data"); else if(x.oiDelta1m<0)reasons.push("oi");
   if(x?.orderBookImbalance!=null&&x.orderBookImbalance<0.15)reasons.push("book");
   if(x?.tradeFlow1m!=null&&x.tradeFlow1m<0.15)reasons.push("flow");
-  return {class:reasons.length?"NO_TRADE":"CONFIRMED_LONG",eligible:!reasons.length,reasons};
+  if(reasons.length){if(s&&setups.has(s)&&t-setups.get(s).createdAt>5*60e3)setups.delete(s);return {class:"NO_TRADE",eligible:false,reasons};}
+
+  // Stateful entry: first qualifying impulse only arms a setup. We then wait
+  // for a controlled 0.20%-0.90% pullback from its post-arm high, followed by
+  // a recovery with positive tape/book and sustained 5m momentum.
+  let q=setups.get(s);
+  if(!q){setups.set(s,{createdAt:t,armedPrice:x.last,high:x.last,pulledBack:false,pullbackLow:x.last});return {class:"ARMED_PULLBACK",eligible:false,reasons:["await_pullback"]};}
+  if(t-q.createdAt>5*60e3){setups.set(s,{createdAt:t,armedPrice:x.last,high:x.last,pulledBack:false,pullbackLow:x.last});return {class:"ARMED_PULLBACK",eligible:false,reasons:["setup_expired_rearmed"]};}
+  q.high=Math.max(q.high,x.last);
+  const dd=(q.high-x.last)/q.high*100;
+  if(!q.pulledBack){
+    if(dd>=0.20&&dd<=0.90){q.pulledBack=true;q.pullbackLow=x.last;setups.set(s,q);return {class:"PULLBACK_SEEN",eligible:false,reasons:["await_reacceleration"]};}
+    if(dd>0.90){setups.delete(s);return {class:"NO_TRADE",eligible:false,reasons:["pullback_too_deep"]};}
+    setups.set(s,q);return {class:"ARMED_PULLBACK",eligible:false,reasons:["await_pullback"]};
+  }
+  q.pullbackLow=Math.min(q.pullbackLow,x.last);
+  const rebound=(x.last/q.pullbackLow-1)*100;
+  if(dd>0.90){setups.delete(s);return {class:"NO_TRADE",eligible:false,reasons:["pullback_failed"]};}
+  if(rebound<0.12){setups.set(s,q);return {class:"PULLBACK_SEEN",eligible:false,reasons:["await_reacceleration"]};}
+  if((x.orderBookImbalance??0)<0.20||(x.tradeFlow1m??0)<0.20||(x.volumeAcceleration??0)<1.35){setups.set(s,q);return {class:"PULLBACK_SEEN",eligible:false,reasons:["reacceleration_quality"]};}
+  setups.delete(s);
+  return {class:"CONFIRMED_LONG",eligible:true,reasons:[],setup:{armedPrice:q.armedPrice,high:q.high,pullbackLow:q.pullbackLow,reboundPct:+rebound.toFixed(4)}};
 }
-export function riskState(){rollDay();return {mode:cfg.mode,killSwitch:kill,openPositions:positions.size,maxPositions:cfg.maxPositions,realizedPnl:+realized.toFixed(2),paperEquity:cfg.paperEquity,riskDay,recovered,credentialsPresent:Boolean(process.env.PHEMEX_API_KEY&&process.env.PHEMEX_API_SECRET)};}
-export function setKill(v=true){kill=Boolean(v);write({type:"kill_switch",enabled:kill});return riskState()}
-export function paperEnter(x){rollDay();const c=classify(x);if(cfg.mode!=="paper")return {ok:false,error:"paper endpoint disabled outside paper mode"};if(kill)return {ok:false,error:"kill switch enabled"};if(!c.eligible)return {ok:false,error:"signal rejected",classification:c};if(positions.size>=cfg.maxPositions)return {ok:false,error:"max positions"};if((cooldown.get(x.symbol)||0)>Date.now())return {ok:false,error:"cooldown"};const dailyLimit=cfg.paperEquity*cfg.dailyLossPct/100;if(realized<=-dailyLimit)return {ok:false,error:"daily loss limit"};const id=crypto.randomUUID(),entry=Number(x.last),stop=entry*(1-0.012),riskUsd=cfg.paperEquity*cfg.riskPct/100,qty=riskUsd/(entry-stop),tp=entry+(entry-stop)*2;if(!Number.isFinite(qty)||qty<=0)return {ok:false,error:"invalid sizing"};const p={id,symbol:x.symbol,side:"Buy",entry,stop,tp,qty:+qty.toFixed(8),riskUsd:+riskUsd.toFixed(2),openedAt:Date.now(),status:"OPEN"};positions.set(id,p);cooldown.set(x.symbol,Date.now()+cfg.cooldownMs);write({type:"paper_entry",...p,classification:c});return {ok:true,position:p};}
-export function paperMark(rows){rollDay();for(const p of [...positions.values()]){const x=rows.find(r=>r.symbol===p.symbol);if(!x?.last)continue;let exit=null,why=null;if(x.last<=p.stop){exit=p.stop;why="STOP"}else if(x.last>=p.tp){exit=p.tp;why="TP"}if(exit!=null){const pnl=(exit-p.entry)*p.qty;realized+=pnl;positions.delete(p.id);write({type:"paper_exit",...p,exit,reason:why,pnl:+pnl.toFixed(4)});}}}
-export function openPositions(){return [...positions.values()]}
-export function idempotent(key){if(!key)return false;if(seen.has(key))return false;seen.add(key);if(seen.size>5000)seen.delete(seen.values().next().value);return true}
