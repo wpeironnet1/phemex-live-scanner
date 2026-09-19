@@ -10,7 +10,8 @@ const ROTATE_COUNT=Math.max(5,Math.min(50,Number(process.env.MICROSTRUCTURE_ROTA
 const ROTATE_MS=Math.max(5000,Number(process.env.MICROSTRUCTURE_ROTATE_MS||15000));
 const STALE_MS=Math.max(10000,Number(process.env.FEED_STALE_RECONNECT_MS||12000));
 const CONNECT_TIMEOUT_MS=Math.max(5000,Number(process.env.FEED_CONNECT_TIMEOUT_MS||10000));
-let rotateOffset=0,lastRotate=0,lastTickerAt=0,lastRestAt=0,restBusy=false;\nconst REST_REFRESH_MS=Math.max(2000,Number(process.env.REST_TICKER_REFRESH_MS||3000));
+let rotateOffset=0,lastRotate=0,lastTickerAt=0,lastRestAt=0,restBusy=false;
+const REST_REFRESH_MS=Math.max(2000,Number(process.env.REST_TICKER_REFRESH_MS||3000));
 
 const send=(socket,method,params=[])=>socket?.readyState===WebSocket.OPEN&&socket.send(JSON.stringify({id:Date.now()+Math.random(),method,params}));
 
@@ -127,8 +128,10 @@ export function startFeed(){
   marketWs=null;microWs=null;focused=[];lastTickerAt=0;
   connectMarket();
   connectMicro();
+  refreshRestTickers(true);
   timer=setInterval(()=>{
     sampleHistory();
+    refreshRestTickers();
     send(marketWs,"server.ping");
     send(microWs,"server.ping");
     focus();
