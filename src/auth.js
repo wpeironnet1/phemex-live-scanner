@@ -94,36 +94,97 @@ export async function privateRequest(method, path, { query = "", body = null } =
 }
 
 // Read-only connectivity diagnostics must remain separate from order execution.
+
+function hmacHex(secretKey, payload) {
+  return crypto.createHmac("sha256", secretKey).update(payload).digest("hex");
+}
+
+async function probeSignatureVariant({ name, key, payload, expiryHeader, path, query }) {
+  const response = await fetch(`${API}${path}?${query}`, {
+    method: "GET",
+    headers: {
+      "x-phemex-access-token": (process.env.PHEMEX_API_KEY || "").trim(),
+      "x-phemex-request-expiry": String(expiryHeader),
+      "x-phemex-request-signature": hmacHex(key, payload)
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  return {
+    name,
+    authenticated: response.ok && (data?.code === 0 || data?.code === undefined),
+    httpStatus: response.status,
+    responseCode: data?.code ?? null,
+    responseMessage: data?.msg
+  };
+}
+
 export async function authDiagnosticStatus() {
   const path = "/g-accounts/accountPositions";
   const query = "currency=USDT";
 
   try {
-    const signed = sign(path, query);
+    const apiKey = (process.env.PHEMEX_API_KEY || "").trim();
+    const secret = (process.env.PHEMEX_API_SECRET || "").trim();
+    if (!apiKey || !secret) throw new Error("Phemex credentials are not configured");
 
-    const response = await fetch(`${API}${path}?${query}`, {
-      method: "GET",
-      headers: signed.headers
-    });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expirySec = nowSec + 60;
+    const expiryMs = Date.now() + 60000;
+    const rawKey = Buffer.from(secret, "utf8");
+    const decodedKey = Buffer.from(secret, "base64url");
 
-    const data = await response.json().catch(() => ({}));
-    const authenticated =
-      response.ok && (data?.code === 0 || data?.code === undefined);
+    const variants = [
+      {
+        name: "raw-standard",
+        key: rawKey,
+        expiryHeader: expirySec,
+        payload: path + query + expirySec
+      },
+      {
+        name: "decoded-standard",
+        key: decodedKey,
+        expiryHeader: expirySec,
+        payload: path + query + expirySec
+      },
+      {
+        name: "raw-query-question-mark",
+        key: rawKey,
+        expiryHeader: expirySec,
+        payload: path + "?" + query + expirySec
+      },
+      {
+        name: "raw-millisecond-expiry",
+        key: rawKey,
+        expiryHeader: expiryMs,
+        payload: path + query + expiryMs
+      },
+      {
+        name: "raw-no-leading-slash",
+        key: rawKey,
+        expiryHeader: expirySec,
+        payload: path.slice(1) + query + expirySec
+      }
+    ];
+
+    const probeResults = [];
+    for (const variant of variants) {
+      probeResults.push(await probeSignatureVariant({ ...variant, path, query }));
+    }
+
+    const winner = probeResults.find((r) => r.authenticated) || null;
 
     return {
-      authenticated,
+      authenticated: Boolean(winner),
       configured: authStatus().credentialsPresent,
       readOnly: true,
       executionUnlocked: false,
       apiHost: new URL(API).host,
-      signingMode: signed.secretMode,
+      winningVariant: winner?.name ?? null,
       credentialShape: {
-        keyLooksUuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((process.env.PHEMEX_API_KEY || "").trim()),
-        ...secretDiagnostics()
+        keyLooksUuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(apiKey),
+        ...secretDiagnostics(secret)
       },
-      httpStatus: response.status,
-      responseCode: data?.code ?? null,
-      responseMessage: authenticated ? undefined : data?.msg
+      probes: probeResults
     };
   } catch (error) {
     return {
