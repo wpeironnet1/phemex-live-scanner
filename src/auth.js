@@ -31,20 +31,39 @@ export function secretDiagnostics(secret = process.env.PHEMEX_API_SECRET || "") 
   };
 }
 
+export function signingKeyForSecret(secret) {
+  const trimmed = String(secret || "").trim();
+  if (!trimmed) throw new Error("Phemex API secret is not configured");
+
+  const diagnostics = secretDiagnostics(trimmed);
+
+  // Phemex docs describe legacy secrets as Base64URL encoded, while their
+  // official Node example signs with the supplied secret directly. Support
+  // both formats without needing the secret to be exposed or re-entered.
+  if (diagnostics.base64UrlRoundTrip) {
+    return { key: Buffer.from(trimmed, "base64url"), mode: "base64url-decoded" };
+  }
+
+  return { key: Buffer.from(trimmed, "utf8"), mode: "raw-utf8" };
+}
+
 export function sign(path, query = "", expiry = Math.floor(Date.now() / 1000) + 60, body = "") {
-  const key = process.env.PHEMEX_API_KEY;
+  const apiKey = process.env.PHEMEX_API_KEY;
   const secret = process.env.PHEMEX_API_SECRET;
 
-  if (!key || !secret) throw new Error("Phemex credentials are not configured");
+  if (!apiKey || !secret) throw new Error("Phemex credentials are not configured");
 
-  const signingKey = decodeApiSecret(secret.trim());
+  const { key: signingKey, mode } = signingKeyForSecret(secret);
   const payload = path + query + expiry + body;
   const sig = crypto.createHmac("sha256", signingKey).update(payload).digest("hex");
 
   return {
-    "x-phemex-access-token": key.trim(),
-    "x-phemex-request-expiry": String(expiry),
-    "x-phemex-request-signature": sig
+    headers: {
+      "x-phemex-access-token": apiKey.trim(),
+      "x-phemex-request-expiry": String(expiry),
+      "x-phemex-request-signature": sig
+    },
+    secretMode: mode
   };
 }
 
@@ -54,8 +73,9 @@ export async function privateRequest(method, path, { query = "", body = null } =
   }
 
   const text = body == null ? "" : JSON.stringify(body);
+  const signed = sign(path, query, undefined, text);
   const headers = {
-    ...sign(path, query, undefined, text),
+    ...signed.headers,
     "content-type": "application/json"
   };
 
@@ -79,11 +99,11 @@ export async function authDiagnosticStatus() {
   const query = "currency=USDT";
 
   try {
-    const headers = sign(path, query);
+    const signed = sign(path, query);
 
     const response = await fetch(`${API}${path}?${query}`, {
       method: "GET",
-      headers
+      headers: signed.headers
     });
 
     const data = await response.json().catch(() => ({}));
@@ -96,6 +116,7 @@ export async function authDiagnosticStatus() {
       readOnly: true,
       executionUnlocked: false,
       apiHost: new URL(API).host,
+      signingMode: signed.secretMode,
       credentialShape: {
         keyLooksUuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((process.env.PHEMEX_API_KEY || "").trim()),
         ...secretDiagnostics()
